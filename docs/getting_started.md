@@ -55,6 +55,12 @@ PyTorch 1.3.1., you need to install the prebuilt PyTorch with CUDA 9.2.
 conda install pytorch=1.3.1 cudatoolkit=9.2 torchvision=0.4.2 -c pytorch
 ```
 
+Install cuda-nvcc in conda env
+
+```python
+conda install -c "nvidia/label/cuda-11.3.1" cuda-nvcc
+```
+
 If you build PyTorch from source instead of installing the prebuilt pacakge,
 you can use more CUDA versions such as 9.0.
 
