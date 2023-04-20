@@ -30,7 +30,7 @@ train_pipeline = [
     dict(
         type='ObjectSample',
         db_sampler=dict(
-            data_root=None,
+            data_root=data_root,
             info_path=data_root + 'nuscenes_dbinfos_train.pkl',
             rate=1.0,
             prepare=dict(
