@@ -10,9 +10,9 @@ import torch
 
 from mmdet3d.core.bbox import box_np_ops
 from mmdet3d.datasets.pipelines import data_augment_utils
-from mmdet.datasets import PIPELINES
-from ..registry import OBJECTSAMPLERS
+from ..builder import OBJECTSAMPLERS, PIPELINES
 from dgl.geometry import farthest_point_sampler
+from math import sqrt
 
 class BatchSampler:
     """Class for sampling specific category of ground truths.
@@ -99,6 +99,8 @@ class DataBaseSampler(object):
         ds_rate (dict: class -> float, optional): Downsample rate, i.e. probability for EACH object sampled to be downsampled. Default: 0.0 for all classes.
         ds_scale (dict: class -> []float, optional): Downsample scale upper and lower bound to sample from uniformly. The uniformly sampled value is the on that each downsampled objects x- and y-coordinates are multiplied by. Default: [1.0, 1.0] (multiplication of 1.0 means no change compared to actual gt database) for all clases.
         ds_flip_xy (bool, optional): Whether to multiply x and y coordinates of sampled ground truths by -1 with probability of 0.5 for evening out sampling dsitribution. Default: False.
+        ds_method (str, optional): Method to use for downsampling. Default: 'Random'.
+        max_range_class (dict: class -> float, optional): Maximum range of sampled objects. Default: Max detection ranges for nuScenes.
     """
 
     def __init__(self,
@@ -116,9 +118,22 @@ class DataBaseSampler(object):
                      use_dim=[0, 1, 2, 3]),
                  file_client_args=dict(backend='disk'),
                  ds_rate={},
-                 ds_scale={},
+                 ds_target_range={},
+                 long_range_fraction=1/3,
                  ds_flip_xy=False,
-                 ds_method='Random'):
+                 ds_method='Random',
+                 max_range_class=dict(
+                    car= 50, 
+                    truck= 50, 
+                    bus= 50, 
+                    trailer= 50, 
+                    construction_vehicle= 50, 
+                    traffic_cone= 30, 
+                    barrier= 30, 
+                    motorcycle= 40, 
+                    bicycle= 40, 
+                    pedestrian= 40),
+                 ):
         super().__init__()
         self.data_root = data_root
         self.info_path = info_path
@@ -134,18 +149,19 @@ class DataBaseSampler(object):
         for c in classes:
             if c not in ds_rate:
                 ds_rate[c] = 0.0
-            if c not in ds_scale:
-                ds_scale[c] = [1.0, 1.0]
+            if c not in ds_target_range:
+                ds_target_range[c] = [max_range_class[c]*(1-long_range_fraction), max_range_class[c]]
         self.ds_rate = ds_rate
-        self.ds_scale = ds_scale
+        self.ds_target_range = ds_target_range
         self.ds_flip_xy = ds_flip_xy
+        self.max_range_class = max_range_class
         
         assert ds_method in ['Random', 'FPS'], f"Downsample method '{ds_method}' not supported, only 'Random' and 'FPS' are supported."
         print(f"Using {ds_method} as downsample method.")
         self.ds_method = ds_method
         
         print(self.ds_rate)
-        print(self.ds_scale)
+        print(self.ds_target_range)
         print(self.ds_flip_xy)
 
         # load data base infos
@@ -319,7 +335,36 @@ class DataBaseSampler(object):
             if sampled_num > 0:
                 sampled_cls = self.sample_class_v2(class_name, sampled_num,
                                                    avoid_coll_boxes)
-                for samp in sampled_cls:
+                for samp in sampled_cls:                    
+                    if random.random() <= self.ds_rate[class_name]:
+                        # dss += [random.uniform(self.ds_scale[class_name][0], self.ds_scale[class_name][1])]
+                        # if samp["num_points_in_gt"]//(dss[-1]**3) > 5 and sqrt(samp["box3d_lidar"][0]**2+samp["box3d_lidar"][1]**2)*dss[-1] < self.max_range_class [class_name]:
+                        #     samp["box3d_lidar"][0:2] *= dss[-1]
+                        #     ds_tracker += [True]
+                        # else:
+                        #     # print("Downsampled object ends up too far away or has too few points, skipping downsampling")
+                        #     dss[-1] = 1
+                        #     ds_tracker += [False]
+                        bev_dist = sqrt(samp["box3d_lidar"][0]**2+samp["box3d_lidar"][1]**2)
+                        target_dist = random.uniform(self.ds_target_range[class_name][0], self.ds_target_range[class_name][1])
+                        if target_dist > bev_dist:
+                            dss += [target_dist/bev_dist]
+                            if samp["num_points_in_gt"]//(dss[-1]**3) > 5:
+                                samp["box3d_lidar"][0:2] *= dss[-1]
+                                ds_tracker += [True]
+                            else:
+                                # Downsampled object has too few points, skip downsampling
+                                # print("too few points")
+                                dss[-1] = 1
+                                ds_tracker += [False]
+                        else:
+                            # Target distance is smaller than current distance, skip downsampling
+                            # print("original dist>target dist")
+                            dss += [1]
+                            ds_tracker += [False]
+                    else:
+                        dss += [1]
+                        ds_tracker += [False]
                     if self.ds_flip_xy:
                         flip_x = random.random() <= .5
                         flip_y = random.random() <= .5
@@ -333,13 +378,7 @@ class DataBaseSampler(object):
                         ds_flip_y_tracker += [True]
                     else:
                         ds_flip_y_tracker += [False]
-                    if random.random() <= self.ds_rate[class_name]:
-                        dss += [random.uniform(self.ds_scale[class_name][0], self.ds_scale[class_name][1])]
-                        samp["box3d_lidar"][0:2] *= dss[-1]
-                        ds_tracker += [True]
-                    else:
-                        dss += [1]
-                        ds_tracker += [False]
+                    
                     # Bounding box rotation
                     if samp["box3d_lidar"][6] >= 0:
                         if flip_x:
